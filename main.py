@@ -1,25 +1,11 @@
+import numpy as np
+import torch
+from copy import deepcopy
 from fourrooms import Fourrooms
 
 
-env = Fourrooms()
-a = env.observation_space
-print(a)
-print("goal",env.goal)
+def run():
+    env = Fourrooms()
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-b = env.reset()
-print("b",b)
-
-empty = env.empty_around(env.agent_location)
-
-print(empty,"empty")
-
-env.switch_goal()
-print("goal change")
-
-print("goal",env.goal)
-b = env.reset()
-print("b",b)
-
-empty = env.empty_around(env.agent_location)
-
-print(empty,"empty")
+    
