@@ -95,4 +95,28 @@ class OptionCriticFeatures(nn.Module):
     
     # action 선택
     def get_action(self, state, option):
-        
+        # 텐서 행렬곱, softmax 함수 사용해서 확률 분포료 변환(각 원소가 [0,1]이고 합이 1)
+        # 확률 분포 기반으로 인스턴스 생성 후 샘플링
+        logits = state @ self.option_W[option] + self.option_b[option]
+        action_dist = logits.softmax(dim=-1)
+        action_dist = Categorical(action_dist)
+        action = action_dist.sample()
+
+        # action_dist의 entropy와 선택된 action의 log확률
+        logp = action_dist.log_prob(action)
+        entropy = action_dist.entropy()
+        return action.item(), logp, entropy
+
+    # greedy한 option 선택(Policy over option)
+    def greedy_option(self, state):
+        Q = self.get_Q(state)
+        return Q.argmax(dim=-1).item()
+    
+    @property
+    def epsilon(self):
+        eps = self.eps_min + (self.eps_start- self.eps_min) * exp(-self.num_steps / self.eps_decay)
+        self.num_steps += 1
+        return eps
+    
+def critic_loss():
+    
