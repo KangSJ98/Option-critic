@@ -1,7 +1,7 @@
 import numpy as np
-import pygame
 import gym
 from gym import spaces
+from gym.utils import seeding
 import pygame
 import time
 
@@ -26,6 +26,7 @@ wwwwwwwwwwwww
 """
         # map : 기본 틀
         self.map = np.array([list(map(lambda c: 1 if c=='w' else 0, line)) for line in layout.splitlines()])
+        self.action_space = spaces.Discrete(4)
         self.observation_space = spaces.Box(low=0., high=1., shape=(self.map.size,))
 
         # ex) tostate[(2,3)] = 14, tocell(14) = (2,3)
@@ -62,10 +63,16 @@ wwwwwwwwwwwww
 
     # state 입력 받아서 map에서 state 위치만 2로 바꾼 후 반환
     def get_state(self, state):
-        s = self.map.copy()
-        pos = self.tocell[state]
-        s[pos[0], pos[1]] = 2
+        s = np.where(self.map.flatten() == 1, 1, 0)
+        s[state] = 2
         return s
+    
+    def seed(self, seed=None):
+        return self._seed(seed)
+
+    def _seed(self, seed=None):
+        self.np_random, seed = seeding.np_random(seed)
+        return [seed]
 
     # cell 입력 받아서 상화좌우 중 빈 공간 반환
     def empty_around(self, cell):

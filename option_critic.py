@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 from torch.distributions import Categorical, Bernoulli
-
 from math import exp
 import numpy as np
 
@@ -54,13 +53,12 @@ class OptionCriticFeatures(nn.Module):
         # intra option policy
         # w : 64개의 input에서 num_action output으로 연결을 num_options 만큼
         # b : 각 option의 action 편향
-        self.option_W = nn.Parameter(torch.zeros(num_options, 64, num_actions))
-        self.option_b = nn.parameter(torch.zeros(num_options, num_actions))
+        self.options_W = nn.Parameter(torch.zeros(num_options, 64, num_actions))
+        self.options_b = nn.Parameter(torch.zeros(num_options, num_actions))
 
         self.to(device)
         self.train(not testing)
-
-    
+        
     # 선형 레이어 통과시킨 후 반환
     def get_state(self, obs):
         # 일반적으로 딥 러닝 모델은 배치 단위로 데이터를 처리하는데 이게 보통 4차원이라 차원을 늘려줌
@@ -97,7 +95,7 @@ class OptionCriticFeatures(nn.Module):
     def get_action(self, state, option):
         # 텐서 행렬곱, softmax 함수 사용해서 확률 분포료 변환(각 원소가 [0,1]이고 합이 1)
         # 확률 분포 기반으로 인스턴스 생성 후 샘플링
-        logits = state @ self.option_W[option] + self.option_b[option]
+        logits = state @ self.options_W[option] + self.options_b[option]
         action_dist = logits.softmax(dim=-1)
         action_dist = Categorical(action_dist)
         action = action_dist.sample()
@@ -117,6 +115,62 @@ class OptionCriticFeatures(nn.Module):
         eps = self.eps_min + (self.eps_start- self.eps_min) * exp(-self.num_steps / self.eps_decay)
         self.num_steps += 1
         return eps
+
+
+def actor_loss(obs, option, logp, entropy, reward, done, next_obs, model, model_prime, args):
+    state = model.get_state(to_tensor(obs))
+    next_state = model.get_state(to_tensor(next_obs))
+    next_state_prime = model_prime.get_state(to_tensor(next_obs))
+
+    # 현재, 다음 옵션 종료 확률
+    option_term_prob = model.get_terminations(state)[:, option]
+    next_option_term_prob = model.get_terminations(next_state)[:, option].detach()
+
+    Q = model.get_Q(state).detach().squeeze()
+    next_Q_prime = model_prime.get_Q(next_state_prime).detach().squeeze()
+
+    # gt = R + (에피소드 종료 여부) * gamma * (옵션 유지 확률 * Q + 새로운 옵션 확률 * 새로운 옵션 Q)
+    gt = reward + (1 - done) * args.gamma * \
+        ((1 - next_option_term_prob) * next_Q_prime[option] + next_option_term_prob  * next_Q_prime.max(dim=-1)[0])
     
-def critic_loss():
+    # 여기 아래 살짝 수정 필요
+    #The termination loss
+    termination_loss = option_term_prob * (Q[option].detach() - Q.max(dim=-1)[0].detach() + args.termination_reg) * (1 - done)
     
+    # actor-critic policy gradient with entropy regularization
+    policy_loss = -logp * (gt.detach() - Q[option]) - args.entropy_reg * entropy
+    actor_loss = termination_loss + policy_loss
+    return actor_loss
+
+# 현재 option value function과 다음 상태 value function 과의 차이를 계산
+def critic_loss(model, model_prime, data_batch, args):
+    # replay buffer에서 선택된 data
+    obs, options, rewards, next_obs, dones = data_batch
+    # 텐서의 크기와 형식 맞추는 전처리 과정
+    batch_idx = torch.arange(len(options)).long()
+    options = torch.LongTensor(options).to(model.device)
+    rewards = torch.FloatTensor(rewards).to(model.device)
+    masks = 1 - torch.FloatTensor(dones).to(model.device)
+
+    # loss = TD loss of Q
+    state = model.get_state(to_tensor(obs)).squeeze(0)
+    Q = model.get_Q(state)
+
+    # 학습 안정성을 위한 prime network 사용
+    next_state_prime = model_prime.get_state(to_tensor(next_obs)).squeeze(0)
+    next_Q_prime = model_prime.get_Q(next_state_prime)
+
+    # 다음 상태 옵션 종료 확률
+    next_states = model.get_state(to_tensor(next_obs)).squeeze(0)
+    next_termination_probs = model.get_terminations(next_states).detach()
+    next_options_term_prob = next_termination_probs[batch_idx, options]
+
+    # gt = R + (에피소드 종료 여부) * gamma * (옵션 유지 확률 * Q + 새로운 옵션 확률 * 새로운 옵션 Q)
+    gt = rewards + masks * args.gamma * \
+        ((1 - next_options_term_prob) * next_Q_prime[batch_idx, options] + next_options_term_prob  * next_Q_prime.max(dim=-1)[0])
+
+    # td error 계산(현재 상태 추정, 다음 상태 실제 값 차이 MSE)
+    td_error = (Q[batch_idx, options] - gt.detach()).pow(2).mul(0.5).mean()
+
+    return td_error
+

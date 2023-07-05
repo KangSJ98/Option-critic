@@ -9,6 +9,7 @@ from experience_replay import ReplayBuffer
 from logger import Logger
 from option_critic import critic_loss as critic_loss_fn
 from option_critic import actor_loss as actor_loss_fn
+from utils import to_tensor
 
 import time
 import os
@@ -42,6 +43,7 @@ parser.add_argument('--switch-goal', type=bool, default=True, help='switch goal 
 
 def run(args):
     env = Fourrooms()
+    option_critic = OptionCriticFeatures
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     desktop_path = os.path.join(os.path.expanduser("~"), "Desktop")
 
@@ -57,7 +59,7 @@ def run(args):
         device=device
     )
 
-    # prime network 생성
+    # 학습 과정 안정화를 위해 prime network 생성
     option_critic_prime = deepcopy(option_critic)
 
     # 최적화 대상 지정
@@ -77,7 +79,8 @@ def run(args):
 
     while steps < args.max_steps_total:
         obs = env.reset()
-        state = option_critic.greedy_option(state)
+        state = option_critic.get_state(to_tensor(obs))
+        greedy_option = option_critic.greedy_option(state)
         rewards = 0; ep_steps = 0; done = False
 
         # option
@@ -89,7 +92,7 @@ def run(args):
         if args.switch_goal and logger.n_eps == 2000:
             env.switch_goal()
             print("New goal ", env.goal)
-        if logger.n_eps > 10000:
+        if logger.n_eps > 4000:
             break
 
         # episod
@@ -119,3 +122,35 @@ def run(args):
             if len(buffer) > args.batch_size:
                 # actor loss
                 actor_loss = actor_loss_fn(obs, current_option, logp, entropy, reward, done, next_obs, option_critic, option_critic_prime, args)
+                loss = actor_loss
+
+                # critic loss
+                # 주기를 가지는 이유 : computation, stability 단점 : 최신 데이터 반영 x
+                if steps % args.update_frequency == 0:
+                    buffer_data = buffer.sample(args.batch_size)
+                    critic_loss = critic_loss_fn(option_critic, option_critic_prime, buffer_data, args)
+                    loss += critic_loss
+
+                # gradient 0으로 초기화
+                optim.zero_grad()
+                # loss(actor loss + critic loss)로 backpropagation(모든 매개변수에 대한 gradient 계산)
+                loss.backward()
+                # 계산된 gradient로 매개변수 업데이트
+                optim.step()
+
+                # prime network에 복사
+                if steps % args.freeze_interval == 0:
+                    option_critic_prime.load_state_dict(option_critic.state_dict())
+
+            state = option_critic.get_state(to_tensor(next_obs))
+
+            # update steps, etc
+            steps += 1; ep_steps += 1; curr_op_len += 1; obs = next_obs
+
+            logger.log_data(steps, actor_loss, critic_loss, entropy.item(), epsilon)
+
+        logger.log_episode(steps, rewards, option_length, ep_steps, epsilon)
+
+if __name__=="__main__":
+    args = parser.parse_args()
+    run(args)
