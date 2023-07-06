@@ -68,6 +68,7 @@ def run(args):
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     env.seed(args.seed)
+    env.init_render()
 
     # replay buffer, logger
     buffer = ReplayBuffer(capacity=args.max_history, seed=args.seed)
@@ -97,6 +98,9 @@ def run(args):
 
         # episod
         while not done and ep_steps < args.max_steps_ep:
+            # 200번 마다 렌더링
+            if logger.n_eps % 200 == 199:
+                env.render()
             epsilon = option_critic.epsilon
 
             # 옵션 종료 시 새로운 옵션 선택(e-greedy)
